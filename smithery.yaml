@@ -1,0 +1,138 @@
+# Smithery Registry — hive-mcp-sigr
+# https://smithery.ai
+
+startCommand:
+  type: http
+  configSchema:
+    type: object
+    properties: {}
+    required: []
+  url: https://hive-mcp-sigr.onrender.com/mcp
+
+name: hive-mcp-sigr
+displayName: hive-mcp-sigr — Signed inference Guarantee Receipt (SiGR)
+version: "1.0.0"
+description: >
+  Signed inference Guarantee Receipt (SiGR) for the AI agent economy. Four
+  signing tools — sign_chain (flagship), sign_bill, sign_bond, sign_consensus —
+  seal an agent run, a billing receipt, an SLA bond, or a model-panel verdict
+  into an ML-DSA-65 (NIST FIPS 204) envelope that is verifiable offline. Signing
+  the exact state an AI saw before it acted, so the receipt is the record. Verify
+  is always free; Build tier (first 1M receipts) free. Patent Pending.
+
+author:
+  name: Steve Rotzin
+  email: steve@thehiveryiq.com
+  url: https://www.thehiveryiq.com
+
+license: MIT
+homepage: https://github.com/srotzin/hive-mcp-sigr
+repository:
+  type: git
+  url: https://github.com/srotzin/hive-mcp-sigr
+
+transport: streamable-http
+endpoint: https://hive-mcp-sigr.onrender.com/mcp
+protocol: "2024-11-05"
+
+categories:
+  - agent-to-agent
+  - inference
+  - observability
+  - provenance
+  - security
+
+tags:
+  - mcp
+  - hive
+  - sigr
+  - signed-inference
+  - ml-dsa
+  - fips-204
+  - post-quantum
+  - provenance
+  - a2a
+  - ai-agents
+  - audit
+
+tools:
+  - name: sign_chain
+    description: >
+      Sign a multi-step agent run (flagship). Seals each step and its causal
+      parents into one ML-DSA-65 envelope with a causal_root. Pass a "run"
+      object. Build tier free.
+    inputs:
+      - name: run
+        type: object
+        required: true
+        description: "{run_id, agent_ref, steps:[{step_id, kind, seq, parents[], input, output}]}"
+  - name: sign_bill
+    description: >
+      Sign an inference cost/billing receipt into an ML-DSA-65 envelope. Pass a
+      "request" object. Build tier free.
+    inputs:
+      - name: request
+        type: object
+        required: true
+        description: "{request_id, model_id, backend, input_tokens, output_tokens, ...prices}"
+  - name: sign_bond
+    description: >
+      Sign an SLA performance bond into an ML-DSA-65 envelope. Pass a "terms"
+      object. Build tier free.
+    inputs:
+      - name: terms
+        type: object
+        required: true
+        description: "{bond_id, customer_ref, service_ref, window_*, latency_ceiling_ms, ...}"
+  - name: sign_consensus
+    description: >
+      Sign a model-panel verdict into an ML-DSA-65 envelope. Pass "panel",
+      "method", and "members[]". Build tier free.
+    inputs:
+      - name: panel
+        type: object
+        required: true
+      - name: method
+        type: string
+        required: true
+      - name: members
+        type: array
+        required: true
+  - name: verify_receipt
+    description: >
+      Verify a signed SiGR receipt offline (always free). Pass "product" and the
+      "envelope".
+    inputs:
+      - name: product
+        type: string
+        required: true
+      - name: envelope
+        type: object
+        required: true
+  - name: get_pubkey
+    description: >
+      Get the ML-DSA-65 (FIPS 204) public key for offline verification. Free.
+
+runtime:
+  type: node
+  version: ">=18"
+  command: node server.js
+  env:
+    - name: PORT
+      default: "3000"
+      required: false
+    - name: ENABLE
+      default: "true"
+      required: false
+    - name: HIVE_SIGNER_URL
+      default: "https://hive-typed-signer.onrender.com"
+      required: false
+
+brand:
+  color: "#C08D23"
+  name: "Hive Civilization gold (Pantone 1245 C)"
+
+policy:
+  inbound_only: true
+  custody: never
+  role: signing_only

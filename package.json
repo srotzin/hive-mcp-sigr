@@ -1,0 +1,44 @@
+{
+  "name": "hive-mcp-sigr",
+  "version": "1.0.0",
+  "description": "Signed inference Guarantee Receipt (SiGR) MCP server. Sign agent runs, billing receipts, SLA bonds, and model-panel verdicts with ML-DSA-65 (NIST FIPS 204) — verifiable offline. The receipt is the record. Patent Pending. Hive Civilization.",
+  "type": "module",
+  "main": "server.js",
+  "bin": {
+    "hive-mcp-sigr": "./server.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "mcp",
+    "hive",
+    "sigr",
+    "signed-inference",
+    "ml-dsa",
+    "dilithium",
+    "fips-204",
+    "post-quantum",
+    "provenance",
+    "a2a",
+    "agent-to-agent",
+    "ai-agents",
+    "inference",
+    "audit",
+    "receipts"
+  ],
+  "author": "Steve Rotzin <steve@thehiveryiq.com> (https://www.thehiveryiq.com)",
+  "license": "MIT",
+  "homepage": "https://github.com/srotzin/hive-mcp-sigr",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/srotzin/hive-mcp-sigr"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
