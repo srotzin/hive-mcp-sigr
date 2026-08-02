@@ -3,7 +3,7 @@
   "name": "io.github.srotzin/hive-mcp-sigr",
   "title": "Hive Signed inference Guarantee Receipt (SiGR)",
   "description": "Sign agent runs, billing receipts, SLA bonds, and model-panel verdicts with ML-DSA-65 (NIST FIPS 204). Each receipt is verifiable offline with the returned envelope. The receipt is the record. Patent Pending.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "websiteUrl": "https://www.thehiveryiq.com",
   "remotes": [
     {

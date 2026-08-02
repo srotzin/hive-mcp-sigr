@@ -1,4 +1,4 @@
-# Smithery Registry — hive-mcp-sigr
+# Smithery Registry: hive-mcp-sigr
 # https://smithery.ai
 
 startCommand:
@@ -10,11 +10,11 @@ startCommand:
   url: https://hive-mcp-sigr.onrender.com/mcp
 
 name: hive-mcp-sigr
-displayName: hive-mcp-sigr — Signed inference Guarantee Receipt (SiGR)
-version: "1.0.0"
+displayName: "hive-mcp-sigr: Signed inference Guarantee Receipt (SiGR)"
+version: "1.1.0"
 description: >
   Signed inference Guarantee Receipt (SiGR) for the AI agent economy. Four
-  signing tools — sign_chain (flagship), sign_bill, sign_bond, sign_consensus —
+  signing tools (sign_chain (flagship), sign_bill, sign_bond, sign_consensus)
   seal an agent run, a billing receipt, an SLA bond, or a model-panel verdict
   into an ML-DSA-65 (NIST FIPS 204) envelope that is verifiable offline. Signing
   the exact state an AI saw before it acted, so the receipt is the record. Verify

@@ -1,32 +1,84 @@
 #!/usr/bin/env node
 /**
- * hive-mcp-sigr — Signed inference Guarantee Receipt (SiGR™) MCP Server
+ * hive-mcp-sigr: Signed inference Guarantee Receipt (SiGR™) MCP Server
  *
- * Four signing tools — sign_bill, sign_bond, sign_chain, sign_consensus —
- * plus their offline verifiers. Every receipt is signed with ML-DSA-65
- * (NIST FIPS 204) by the Hive typed signer and is verifiable offline with the
- * returned envelope. Signing the exact state an AI saw before it acted, so the
- * receipt is the record. Patent Pending. Hive Civilization.
+ * Signing tools for the SiGR product family plus their offline verifiers.
+ * Every receipt is signed with ML-DSA-65 (NIST FIPS 204) by the Hive typed
+ * signer and is verifiable offline with the returned envelope. Signing the
+ * exact state an AI saw before it acted, so the receipt is the record.
+ * Patent Pending. Hive Civilization.
  *
  * Streamable-HTTP, JSON-RPC 2.0, MCP 2024-11-05. Inbound only.
  * Build tier (first 1M receipts) free. MIT.
+ *
+ * Tool set is reconciled against the live upstream signer's advertised
+ * routes (GET / on HIVE_SIGNER_URL). We only expose a tool here if the
+ * matching upstream POST route actually exists. See README "Tool <->
+ * upstream route map" for the audit trail.
  */
 import express from 'express';
 
 const SERVICE    = 'hive-mcp-sigr';
-const VERSION    = '1.0.0';
+const VERSION    = '1.1.0';
 const PORT       = process.env.PORT || 3000;
 const ENABLE     = (process.env.ENABLE ?? 'true') !== 'false';
 const BRAND_GOLD = '#C08D23';
 const SIGNER_BASE = process.env.HIVE_SIGNER_URL || 'https://hive-typed-signer.onrender.com';
 
+// ─── Environment validation (fail closed) ──────────────────────────────────
+// A malformed HIVE_SIGNER_URL would silently break every tool call at
+// request time. Validate eagerly at boot and refuse to serve traffic on a
+// bad config instead of returning confusing per-call errors forever.
+function validateEnv() {
+  const errors = [];
+  try {
+    const u = new URL(SIGNER_BASE);
+    if (!/^https?:$/.test(u.protocol)) errors.push(`HIVE_SIGNER_URL must be http(s): got "${SIGNER_BASE}"`);
+  } catch {
+    errors.push(`HIVE_SIGNER_URL is not a valid URL: "${SIGNER_BASE}"`);
+  }
+  const portNum = Number(PORT);
+  if (!Number.isInteger(portNum) || portNum <= 0 || portNum > 65535) {
+    errors.push(`PORT must be a valid TCP port: got "${PORT}"`);
+  }
+  return errors;
+}
+
+const ENV_ERRORS = validateEnv();
+if (ENV_ERRORS.length > 0) {
+  console.error(`[${SERVICE}] FATAL: invalid environment, refusing to start:`);
+  for (const e of ENV_ERRORS) console.error(`  - ${e}`);
+  process.exit(1);
+}
+
+// Real upstream product routes (verified live against hive-typed-signer):
+//   POST /sigr/bill        POST /sigr/bill/verify
+//   POST /sigr/bond        POST /sigr/bond/verify
+//   POST /sigr/chain       POST /sigr/chain/verify
+//   POST /sigr/consensus   POST /sigr/consensus/verify
+//   POST /sigr/mir         POST /sigr/mir/verify
+//   POST /sigr/upstream/gate     (GET /sigr/upstream = catalog)
+//   POST /sigr/gca         POST /sigr/gca/verify
+//   POST /sigr/gitm        POST /sigr/gitm/verify
+//   POST /sigr/cachesign   POST /sigr/cachesign/verify
+//   POST /sigr/manifest    POST /sigr/manifest/verify
+//   GET  /pubkey
+// Every tool below maps 1:1 to a route in this list. No advertised tool may
+// call a path that isn't in this list.
 const PRODUCTS = {
   bill:      { path: '/sigr/bill',      label: 'SiGR-Bill',      docket: 'HC-2026-004', arg: 'request' },
   bond:      { path: '/sigr/bond',      label: 'SiGR-Bond',      docket: 'HC-2026-005', arg: 'terms'   },
   chain:     { path: '/sigr/chain',     label: 'SiGR Chain',     docket: 'HC-2026-006', arg: 'run'     },
   consensus: { path: '/sigr/consensus', label: 'SiGR-Consensus', docket: 'HC-2026-007', arg: 'panel'   },
+  mir:       { path: '/sigr/mir',       label: 'MiR',            docket: 'HC-2026-023', arg: 'mir'     },
+  gca:       { path: '/sigr/gca',       label: 'GCA',            docket: 'HC-2026-024', arg: 'grounding_claims' },
+  gitm:      { path: '/sigr/gitm',      label: 'GiTM',           docket: 'HC-2026-025', arg: 'gitm'    },
+  cachesign: { path: '/sigr/cachesign', label: 'AFiR KV Cache Signing', docket: 'HC-2026-026', arg: 'cache' },
+  manifest:  { path: '/sigr/manifest',  label: 'AFiR Model Manifest',   docket: 'HC-2026-027', arg: 'manifest' },
 };
 const PUBKEY_URL = `${SIGNER_BASE}/pubkey`;
+const GATE_PATH = '/sigr/upstream/gate';
+const UPSTREAM_CATALOG_PATH = '/sigr/upstream';
 
 // ─── Tools ──────────────────────────────────────────────────────────────────
 const TOOLS = [
@@ -90,16 +142,98 @@ const TOOLS = [
     },
   },
   {
-    name: 'verify_receipt',
-    description: 'Verify a signed SiGR receipt offline (always free). Pass the product ("bill" | "bond" | "chain" | "consensus") and the "envelope" object returned by the matching sign tool. Returns {valid, reasons[], ...}. No secret required — anyone can verify with the public key.',
+    name: 'sign_mir',
+    description: 'Sign a Model-Identity & Relineage receipt (MiR, docket HC-2026-023). Binds the served-model lineage across steps and detects substitution. Asserts identity only, not correctness. Returns the signed envelope, verifiable offline. Pass a "mir" object: {subject_id?, expected_model?, steps:[{model_id, weights_sha3, config_hash, endpoint, manifest_nullifier?}]}.',
     inputSchema: {
       type: 'object',
       properties: {
-        product:  { type: 'string', enum: ['bill', 'bond', 'chain', 'consensus'], description: 'Which SiGR product the envelope came from.' },
+        mir: {
+          type: 'object',
+          description: 'MiR payload: {subject_id?, expected_model?, steps:[{model_id, weights_sha3, config_hash, endpoint, manifest_nullifier?}]}.',
+        },
+      },
+      required: ['mir'],
+    },
+  },
+  {
+    name: 'sign_gca',
+    description: 'Sign a Grounding-Claim Attestation (GCA, docket HC-2026-024). Per-claim receipt that proves a claim was supported by cited evidence at generation time. Proves support, not truth. Pass a "grounding_claims" object: {method_hash, answer_id?, claims:[{claim_id?, claim?|claim_hash, support:"0x..."|null, support_strength?|support_strength_bp?}]}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        grounding_claims: {
+          type: 'object',
+          description: '{method_hash, answer_id?, claims:[{claim_id?, claim?|claim_hash, support:"0x..."|null, support_strength?|support_strength_bp?}]}.',
+        },
+      },
+      required: ['grounding_claims'],
+    },
+  },
+  {
+    name: 'sign_gitm',
+    description: 'Sign a Ghost-in-the-Machine cross-signal anomaly flag (GiTM, docket HC-2026-025). Asserts a provenance anomaly only, not a verdict of misbehavior. Pass a "gitm" object: {subject_id?, claims_root_ref?, signals:{grounding_anomaly, identity_flicker, chain_irregularity, cross_run_divergence, under_attested_high_stakes}, trigger_bp?}, or pass "mir_receipt" to source identity_flicker from a signed MiR receipt.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        gitm: { type: 'object', description: '{subject_id?, claims_root_ref?, signals:{...}, trigger_bp?}.' },
+        mir_receipt: { type: 'object', description: 'Optional signed MiR receipt to source identity_flicker from.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'sign_cachesign',
+    description: 'Sign a KV-cache write receipt (AFiR KV Cache Signing, docket HC-2026-026). Signs vLLM prefix cache entries at write time so cache reuse across requests is provable. Pass a "cache" object: {model_id, prefix_hash, block_ids?:[], token_span?:{start,end}, parent_cache_receipt?}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cache: { type: 'object', description: '{model_id, prefix_hash, block_ids?:[], token_span?:{start,end}, parent_cache_receipt?}.' },
+      },
+      required: ['cache'],
+    },
+  },
+  {
+    name: 'sign_manifest',
+    description: 'Sign a streaming model manifest (AFiR Model Manifest, docket HC-2026-027). TEE-less attestation of which model weights/config are actually being served. Pass a "manifest" object: {model_id, weights_sha3, config_hash, endpoint, nullifier?}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        manifest: { type: 'object', description: '{model_id, weights_sha3, config_hash, endpoint, nullifier?}.' },
+      },
+      required: ['manifest'],
+    },
+  },
+  {
+    name: 'verify_receipt',
+    description: 'Verify a signed SiGR receipt offline (always free). Pass the product ("bill" | "bond" | "chain" | "consensus" | "mir" | "gca" | "gitm" | "cachesign" | "manifest") and the "envelope" object returned by the matching sign tool. Returns {valid, reasons[], ...}. No secret required; anyone can verify with the public key.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        product:  { type: 'string', enum: Object.keys(PRODUCTS), description: 'Which SiGR product the envelope came from.' },
         envelope: { type: 'object', description: 'The signed envelope returned by the matching sign tool.' },
       },
       required: ['product', 'envelope'],
     },
+  },
+  {
+    name: 'upstream_gate',
+    description: 'Refuse an action unless every required upstream pre-effect receipt verifies fresh (docket HC-2026-016 through HC-2026-022 suite; endpoint POST /sigr/upstream/gate). Pass "required": [{type, receipt}, ...] where type is one of the fifteen upstream receipt types (e.g. pbs.manifest, refusal.mutation, howler.drift, perimeter.attempt, diurnal.attestation, egress.measurement, forensic.analysis). Use get_upstream_catalog to see the full list of types and their body shapes before calling this.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        required: {
+          type: 'array',
+          description: 'Array of {type, receipt} pairs, one per required upstream pre-effect receipt.',
+          items: { type: 'object' },
+        },
+      },
+      required: ['required'],
+    },
+  },
+  {
+    name: 'get_upstream_catalog',
+    description: 'Get the Upstream Signed Pre-Effect Attestation (USAP) catalog: the seven pre-effect primitives (Provenance-Bonded Sandbox, Refusal Ledger, Howler, Perimeter Bond, Diurnal Bond, Egress Bond, Forensic Rail), their fifteen receipt types, sign/verify routes, TTLs, and body shapes. Free. Read this before calling upstream_gate.',
+    inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'get_pubkey',
@@ -108,13 +242,14 @@ const TOOLS = [
   },
 ];
 
-async function callSigner(path, body) {
-  const r = await fetch(`${SIGNER_BASE}${path}`, {
-    method: 'POST',
+async function callSigner(path, body, method = 'POST') {
+  const opts = {
+    method,
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
     signal: AbortSignal.timeout(30_000),
-  });
+  };
+  if (method !== 'GET') opts.body = JSON.stringify(body ?? {});
+  const r = await fetch(`${SIGNER_BASE}${path}`, opts);
   const text = await r.text();
   let data;
   try { data = JSON.parse(text); } catch { data = { raw: text }; }
@@ -145,12 +280,50 @@ async function executeTool(name, args) {
     const data = await callSigner(PRODUCTS.consensus.path, body);
     return { type: 'text', text: JSON.stringify(data, null, 2) };
   }
+  if (name === 'sign_mir') {
+    if (!args.mir || typeof args.mir !== 'object') throw new Error('Provide a "mir" object.');
+    const data = await callSigner(PRODUCTS.mir.path, { mir: args.mir });
+    return { type: 'text', text: JSON.stringify(data, null, 2) };
+  }
+  if (name === 'sign_gca') {
+    if (!args.grounding_claims || typeof args.grounding_claims !== 'object') throw new Error('Provide a "grounding_claims" object.');
+    const data = await callSigner(PRODUCTS.gca.path, { grounding_claims: args.grounding_claims });
+    return { type: 'text', text: JSON.stringify(data, null, 2) };
+  }
+  if (name === 'sign_gitm') {
+    if (!args.gitm && !args.mir_receipt) throw new Error('Provide a "gitm" object or a "mir_receipt".');
+    const body = {};
+    if (args.gitm) body.gitm = args.gitm;
+    if (args.mir_receipt) body.mir_receipt = args.mir_receipt;
+    const data = await callSigner(PRODUCTS.gitm.path, body);
+    return { type: 'text', text: JSON.stringify(data, null, 2) };
+  }
+  if (name === 'sign_cachesign') {
+    if (!args.cache || typeof args.cache !== 'object') throw new Error('Provide a "cache" object.');
+    const data = await callSigner(PRODUCTS.cachesign.path, { cache: args.cache });
+    return { type: 'text', text: JSON.stringify(data, null, 2) };
+  }
+  if (name === 'sign_manifest') {
+    if (!args.manifest || typeof args.manifest !== 'object') throw new Error('Provide a "manifest" object.');
+    const data = await callSigner(PRODUCTS.manifest.path, { manifest: args.manifest });
+    return { type: 'text', text: JSON.stringify(data, null, 2) };
+  }
   // Verify
   if (name === 'verify_receipt') {
     const p = PRODUCTS[args.product];
-    if (!p) throw new Error('product must be one of: bill, bond, chain, consensus.');
+    if (!p) throw new Error(`product must be one of: ${Object.keys(PRODUCTS).join(', ')}.`);
     if (!args.envelope || typeof args.envelope !== 'object') throw new Error('Provide the "envelope" object.');
     const data = await callSigner(`${p.path}/verify`, { envelope: args.envelope });
+    return { type: 'text', text: JSON.stringify(data, null, 2) };
+  }
+  // Upstream pre-effect gate
+  if (name === 'upstream_gate') {
+    if (!Array.isArray(args.required)) throw new Error('Provide "required": [{type, receipt}, ...].');
+    const data = await callSigner(GATE_PATH, { required: args.required });
+    return { type: 'text', text: JSON.stringify(data, null, 2) };
+  }
+  if (name === 'get_upstream_catalog') {
+    const data = await callSigner(UPSTREAM_CATALOG_PATH, null, 'GET');
     return { type: 'text', text: JSON.stringify(data, null, 2) };
   }
   // Pubkey
@@ -171,7 +344,7 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', service: SERVICE, ver
 app.get('/', (_req, res) => res.json({
   service: SERVICE,
   version: VERSION,
-  description: 'Signed inference Guarantee Receipt (SiGR) MCP server. Sign agent runs, billing, SLA bonds, and model-panel verdicts with ML-DSA-65 (FIPS 204). The receipt is the record. Patent Pending. Hive Civilization.',
+  description: 'Signed inference Guarantee Receipt (SiGR) MCP server. Sign agent runs, billing, SLA bonds, model-panel verdicts, model-identity relineage, grounding attestations, anomaly flags, cache signing, and model manifests with ML-DSA-65 (FIPS 204). The receipt is the record. Patent Pending. Hive Civilization.',
   endpoints: { mcp: '/mcp', well_known: '/.well-known/mcp.json', health: '/health' },
   upstream: SIGNER_BASE,
   products: Object.fromEntries(Object.entries(PRODUCTS).map(([k, v]) => [k, { label: v.label, docket: v.docket, endpoint: v.path }])),
@@ -222,7 +395,7 @@ app.get('/.well-known/mcp.json', (_req, res) => res.json({
   protocol: '2024-11-05',
   transport: 'streamable-http',
   endpoint: '/mcp',
-  description: 'Signed inference Guarantee Receipt (SiGR). Sign agent runs, billing, SLA bonds, model-panel verdicts with ML-DSA-65 (FIPS 204). Verifiable offline. Patent Pending. Hive Civilization.',
+  description: 'Signed inference Guarantee Receipt (SiGR). Sign agent runs, billing, SLA bonds, model-panel verdicts, model-identity relineage, grounding attestations, anomaly flags, cache signing, and model manifests with ML-DSA-65 (FIPS 204). Verifiable offline. Patent Pending. Hive Civilization.',
   tools: TOOLS.map(t => ({ name: t.name, description: t.description })),
   brand_color: BRAND_GOLD,
 }));
@@ -232,11 +405,16 @@ app.get('/.well-known/agent.json', (_req, res) => res.json({
   description: 'Signed inference Guarantee Receipt surface for the Hive agent economy. Every receipt ML-DSA-65 signed (FIPS 204) and verifiable offline.',
   url: `https://${SERVICE}.onrender.com`,
   provider: { organization: 'Hive Civilization', url: 'https://www.thehiveryiq.com', contact: 'steve@thehiveryiq.com' },
-  capabilities: ['signed-receipts', 'agent-run-sealing', 'sla-bonds', 'consensus-verdicts', 'provenance'],
+  capabilities: ['signed-receipts', 'agent-run-sealing', 'sla-bonds', 'consensus-verdicts', 'model-identity-relineage', 'grounding-attestation', 'anomaly-flagging', 'cache-signing', 'model-manifest', 'upstream-pre-effect-gate', 'provenance'],
   tools: TOOLS.map(t => t.name),
   brand_color: BRAND_GOLD,
 }));
 
-if (!ENABLE) console.log(`[${SERVICE}] ENABLE=false — dormant (health only)`);
+// Honest 404: no fabricated success on unknown routes.
+app.use((req, res) => {
+  res.status(404).json({ error: 'not_found', path: req.path, service: SERVICE });
+});
+
+if (!ENABLE) console.log(`[${SERVICE}] ENABLE=false (dormant, health only)`);
 
 app.listen(PORT, () => console.log(`[${SERVICE}] v${VERSION} listening on :${PORT} -> ${SIGNER_BASE}`));
