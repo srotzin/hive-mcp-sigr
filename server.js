@@ -249,11 +249,17 @@ async function callSigner(path, body, method = 'POST') {
     signal: AbortSignal.timeout(30_000),
   };
   if (method !== 'GET') opts.body = JSON.stringify(body ?? {});
-  const r = await fetch(`${SIGNER_BASE}${path}`, opts);
+  let r;
+  try {
+    r = await fetch(`${SIGNER_BASE}${path}`, opts);
+  } catch (err) {
+    throw new Error(`signer ${path} unreachable: ${err?.message || err}`);
+  }
   const text = await r.text();
+  if (!r.ok) throw new Error(`signer ${path} -> ${r.status}: ${text.slice(0, 300)}`);
+  if (text === '') throw new Error(`signer ${path} -> ${r.status}: empty body`);
   let data;
-  try { data = JSON.parse(text); } catch { data = { raw: text }; }
-  if (!r.ok) throw new Error(`signer ${path} -> ${r.status}: ${typeof data === 'object' ? JSON.stringify(data) : text}`);
+  try { data = JSON.parse(text); } catch { throw new Error(`signer ${path} -> ${r.status}: non-JSON body`); }
   return data;
 }
 
@@ -329,7 +335,11 @@ async function executeTool(name, args) {
   // Pubkey
   if (name === 'get_pubkey') {
     const r = await fetch(PUBKEY_URL, { signal: AbortSignal.timeout(15_000) });
-    const data = await r.json();
+    const text = await r.text();
+    if (!r.ok) throw new Error(`signer ${PUBKEY_URL} -> ${r.status}: ${text.slice(0, 300)}`);
+    if (text === '') throw new Error(`signer ${PUBKEY_URL} -> ${r.status}: empty body`);
+    let data;
+    try { data = JSON.parse(text); } catch { throw new Error(`signer ${PUBKEY_URL} -> ${r.status}: non-JSON body`); }
     return { type: 'text', text: JSON.stringify(data, null, 2) };
   }
   throw new Error(`Unknown tool: ${name}`);
@@ -417,4 +427,11 @@ app.use((req, res) => {
 
 if (!ENABLE) console.log(`[${SERVICE}] ENABLE=false (dormant, health only)`);
 
-app.listen(PORT, () => console.log(`[${SERVICE}] v${VERSION} listening on :${PORT} -> ${SIGNER_BASE}`));
+// Only bind a port when this file is run directly (node server.js), not when
+// it is imported as a module, for example from the test suite via supertest.
+const isMain = import.meta.url === `file://${process.argv[1]}`;
+if (isMain) {
+  app.listen(PORT, () => console.log(`[${SERVICE}] v${VERSION} listening on :${PORT} -> ${SIGNER_BASE}`));
+}
+
+export default app;
